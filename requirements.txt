@@ -1,45 +1,16 @@
-# Web framework
-fastapi==0.115.0
-uvicorn[standard]==0.30.0
-python-multipart==0.0.9
-pydantic==2.7.0
-pydantic-settings==2.3.0
-
-# LangGraph + LangChain
-langgraph==0.1.19
-langgraph-checkpoint-sqlite==1.0.0
-langchain-core==0.2.10
-langchain-openai==0.1.8
-langchain-community==0.2.6
-langchain-text-splitters==0.2.2
-langchain-huggingface==0.0.3
-
-# OpenAI
-openai==1.35.0
-
-# Embeddings / Vector store
-faiss-cpu==1.8.0
-sentence-transformers==3.0.0
-
-# PDF
-pymupdf==1.24.5
-
-# Whisper (speech to text)
-faster-whisper==1.0.2
-
-# PyTorch CPU-only (much lighter on Render)
-torch==2.3.0+cpu
-torchvision==0.18.0+cpu
---extra-index-url https://download.pytorch.org/whl/cpu
-
-# Image
-Pillow==10.3.0
-
-# OpenCV headless (no GUI/camera deps)
-opencv-python-headless==4.10.0.84
-
-# Utilities
-python-dotenv==1.0.1
-requests==2.32.3
-pandas==2.2.2
-numpy==1.26.4
+fastapi
+uvicorn
+requests
+pydantic
+faster-whisper
+langgraph
+langchain-openai
+python-dotenv
+langchain-community
+langchain-huggingface
+pymupdf
+faiss-cpu
+sentence-transformers
+python-multipart
+langchain-text-splitters
+langgraph.checkpoint.sqlite
