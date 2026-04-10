@@ -1,27 +1,31 @@
 from fastapi import FastAPI, UploadFile, File, Form, Query, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 import shutil, os, tempfile
 import urllib.request, urllib.parse, json
-
+import subprocess, uuid
 import requests
 import model
 from textExtraction import load_user_pdf
+import sqlite3
+from dotenv import load_dotenv
 
-from faster_whisper import WhisperModel
-
-# -------- WHISPER -------- #
-whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
-
-# -------- PIPER TTS CONFIG -------- #
-PIPER_PATH = "D:/piper/piper.exe"
-MODEL_PATH = "D:/piper/voices/en_US-lessac-medium.onnx"
-CONFIG_PATH = "D:/piper/voices/en_US-lessac-medium.onnx.json"
-ESPEAK_PATH = "D:/piper/espeak-ng-data"
+load_dotenv()
 
 app = FastAPI()
 
+# -------- WHISPER (lazy load) -------- #
+_whisper_model = None
+
+def get_whisper():
+    global _whisper_model
+    if _whisper_model is None:
+        from faster_whisper import WhisperModel
+        _whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+    return _whisper_model
+
+# -------- MIDDLEWARE -------- #
 @app.middleware("http")
 async def add_no_cache_headers(request: Request, call_next):
     response = await call_next(request)
@@ -31,16 +35,17 @@ async def add_no_cache_headers(request: Request, call_next):
     return response
 
 # -------- DB HELPERS -------- #
-import sqlite3
 def get_db_conn():
     conn = sqlite3.connect("chatbot.db", check_same_thread=False)
     return conn
 
-# -------- STATIC -------- #
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
+# -------- STATIC (create dirs if missing) -------- #
+os.makedirs("static", exist_ok=True)
+os.makedirs("templates", exist_ok=True)
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # -------- ROUTES -------- #
@@ -54,12 +59,10 @@ def study():
 
 @app.get("/papers")
 def papers():
-    # Library - now for Discussions
     return FileResponse("templates/papers.html")
 
 @app.get("/saved")
 def saved_page():
-    # Saved - now for Repository (Papers)
     return FileResponse("templates/saved.html")
 
 @app.get("/trending")
@@ -72,7 +75,6 @@ def commands():
 
 @app.get("/trending-papers")
 def trending_papers(query: str = Query("AI")):
-    """Proxy for Semantic Scholar API to avoid browser CORS / rate-limit issues."""
     try:
         encoded = urllib.parse.quote(query)
         url = (
@@ -90,21 +92,18 @@ def trending_papers(query: str = Query("AI")):
             ss_url = f"https://www.semanticscholar.org/paper/{paper_id}" if paper_id else "#"
             doi = (p.get("externalIds") or {}).get("DOI", "")
             read_url = f"https://doi.org/{doi}" if doi else ss_url
-
             authors = p.get("authors", [])
             authors_str = ", ".join(a["name"] for a in authors[:3])
             if len(authors) > 3:
                 authors_str += f" +{len(authors)-3} more"
-
             papers.append({
-                "title":       p.get("title", "Untitled"),
-                "authors":     authors_str or "Unknown Authors",
-                "year":        p.get("year") or "N/A",
-                "citations":   p.get("citationCount", 0),
-                "url":         read_url,
-                "ss_url":      ss_url,
+                "title":     p.get("title", "Untitled"),
+                "authors":   authors_str or "Unknown Authors",
+                "year":      p.get("year") or "N/A",
+                "citations": p.get("citationCount", 0),
+                "url":       read_url,
+                "ss_url":    ss_url,
             })
-
         return JSONResponse({"papers": papers})
     except Exception as e:
         return JSONResponse({"error": str(e), "papers": []}, status_code=500)
@@ -144,29 +143,23 @@ async def remove_saved_paper(filename: str = Form(...)):
 
 @app.get("/study-search")
 async def study_search(query: str):
-    """Fuzzy search for a paper by title and return its filename."""
     conn = get_db_conn()
     c = conn.cursor()
-    # Simple like search for now, could be improved with fuzzy matching
     c.execute("SELECT filename FROM saved_papers WHERE title LIKE ? LIMIT 1", (f"%{query}%",))
     row = c.fetchone()
     if row:
         return {"filename": row[0]}
-    
-    # Also search in general uploads
     files = os.listdir(UPLOAD_DIR)
     for f in files:
         if query.lower() in f.lower():
             return {"filename": f}
-            
     return {"filename": None}
 
-# -------- DISCUSSIONS (FOR LIBRARY) -------- #
+# -------- DISCUSSIONS -------- #
 @app.get("/list-discussions")
 async def list_discussions():
     conn = get_db_conn()
     c = conn.cursor()
-    # Ensure table exists
     c.execute("""CREATE TABLE IF NOT EXISTS discussions (
         thread_id TEXT PRIMARY KEY,
         paper_name TEXT,
@@ -181,52 +174,31 @@ async def remove_discussion(thread_id: str = Form(...)):
     conn = get_db_conn()
     c = conn.cursor()
     c.execute("DELETE FROM discussions WHERE thread_id = ?", (thread_id,))
-    # Also clear checkpoints if possible
     c.execute("DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,))
     conn.commit()
     return {"status": "removed"}
-import subprocess, uuid
-from fastapi.responses import Response
 
+# -------- TTS (Linux-safe via gtts fallback) -------- #
 @app.post("/tts")
 async def tts(data: dict):
     text = data.get("text", "")
     if not text:
         return Response(status_code=400)
 
-    # Clean text for safe execution
-    text = text.replace('"', '').replace("'", "")
-
-    output_file = os.path.join(tempfile.gettempdir(), f"tts_{uuid.uuid4().hex}.wav")
-
     try:
-        process = subprocess.Popen(
-            [
-                PIPER_PATH,
-                "-m", MODEL_PATH,
-                "-c", CONFIG_PATH,
-                "-f", output_file,
-                "--espeak_data", ESPEAK_PATH
-            ],
-            stdin=subprocess.PIPE,
-            text=True
-        )
-
-        process.communicate(text + "\n")
-
-        if os.path.exists(output_file):
-            with open(output_file, "rb") as f:
-                audio = f.read()
-            os.remove(output_file)
-            return Response(content=audio, media_type="audio/wav")
-        else:
-            return Response(status_code=500)
+        from gtts import gTTS
+        import io
+        tts_obj = gTTS(text=text, lang="en", slow=False)
+        buf = io.BytesIO()
+        tts_obj.write_to_fp(buf)
+        buf.seek(0)
+        return Response(content=buf.read(), media_type="audio/mpeg")
     except Exception as e:
         print(f"TTS error: {e}")
         return Response(status_code=500)
 
 # -------- CHAT -------- #
-class Query(BaseModel):
+class ChatQuery(BaseModel):
     message: str
     thread_id: str
 
@@ -239,17 +211,13 @@ def run_chat(user_text, thread_id):
         "confidence": "",
         "ans": ""
     }
-
     config = {"configurable": {"thread_id": thread_id}}
     result = model.graph_app.invoke(state, config=config)
-
     return result["ans"]
 
 @app.post("/chat")
-def chat(query: Query):
+def chat(query: ChatQuery):
     ans = run_chat(query.message, query.thread_id)
-    
-    # Save/Update discussion metadata
     try:
         conn = get_db_conn()
         c = conn.cursor()
@@ -259,18 +227,16 @@ def chat(query: Query):
             last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
         )""")
         paper_name = getattr(model, 'last_paper_filename', 'General Discussion')
-        
         c.execute("""
             INSERT INTO discussions (thread_id, paper_name, last_updated)
             VALUES (?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(thread_id) DO UPDATE SET 
+            ON CONFLICT(thread_id) DO UPDATE SET
                 last_updated=CURRENT_TIMESTAMP,
                 paper_name=excluded.paper_name
         """, (query.thread_id, paper_name))
         conn.commit()
     except Exception as e:
         print(f"Chat metadata error: {e}")
-
     return {"response": ans}
 
 @app.get("/thread-info/{thread_id}")
@@ -287,18 +253,16 @@ def get_thread_info(thread_id: str):
         print(f"Error fetching thread info: {e}")
         return {"paper_name": None}
 
-# -------- VOICE (WHISPER) -------- #
+# -------- VOICE (lazy Whisper) -------- #
 @app.post("/voice-chat")
 async def voice_chat(file: UploadFile = File(...)):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp:
         temp.write(await file.read())
         temp_path = temp.name
 
-    segments, _ = whisper_model.transcribe(temp_path)
+    segments, _ = get_whisper().transcribe(temp_path)
     os.remove(temp_path)
-
     user_text = "".join([seg.text for seg in segments]).strip()
-
     return {"user_text": user_text}
 
 # -------- UPLOAD -------- #
@@ -308,13 +272,10 @@ async def remove_file(filename: str = Form(...)):
         path = os.path.join(UPLOAD_DIR, filename)
         if os.path.exists(path):
             os.remove(path)
-        
-        # Also remove from saved_papers if it exists there
         conn = get_db_conn()
         c = conn.cursor()
         c.execute("DELETE FROM saved_papers WHERE filename = ?", (filename,))
         conn.commit()
-        
         return {"status": "removed"}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -323,42 +284,30 @@ async def remove_file(filename: str = Form(...)):
 async def upload_pdf(file: UploadFile = File(...)):
     filename = file.filename.replace(" ", "_")
     path = os.path.join(UPLOAD_DIR, filename)
-
     with open(path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-
     return {"filename": filename}
 
-# -------- ADD FROM URL -------- #
 @app.get("/add-paper-from-url")
 async def add_paper_from_url(url: str, title: str = None):
     try:
-        # Generate filename from title or URL
         if title:
             filename = title.replace(" ", "_").replace("/", "_") + ".pdf"
         else:
             filename = url.split("/")[-1]
             if not filename.endswith(".pdf"):
                 filename = "document.pdf"
-        
         path = os.path.join(UPLOAD_DIR, filename)
-
-        # Download PDF
         response = requests.get(url, stream=True, timeout=15)
         response.raise_for_status()
-
         with open(path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-
-        # Process automatically
         model.user_db = load_user_pdf(path)
-
         return {"status": "ready", "filename": filename}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
-# -------- PROCESS -------- #
 @app.post("/process_pdf")
 async def process_pdf(filename: str = Form(...)):
     file_path = os.path.join(UPLOAD_DIR, filename)
@@ -367,16 +316,8 @@ async def process_pdf(filename: str = Form(...)):
     model.last_paper_filename = filename
     return {"status": "ready"}
 
-# -------- CLEAR CONTEXT -------- #
 @app.post("/clear-context")
 async def clear_context():
-    """Wipes the loaded paper from memory so AI starts fresh with no document."""
     model.user_db = None
     model.last_paper_filename = "General Discussion"
     return {"status": "cleared"}
-import os
-import uvicorn
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
