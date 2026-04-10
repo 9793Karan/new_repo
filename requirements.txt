@@ -13,3 +13,4 @@ python-dotenv
 pymupdf
 faiss-cpu
 sentence-transformers
+langgraph.checkpoint.sqlite
