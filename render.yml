@@ -2,9 +2,12 @@ services:
   - type: web
     name: fastapi-app
     runtime: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn main:app --host 0.0.0.0 --port 8000"
+    buildCommand: "pip install -r requirements.txt && python init_db.py"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      
+      - key: OPENAI_API_KEY
+        value: "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"
+      - key: SERPER_API_KEY
+        value: "e01062a1b643f6e7b387bc9560b82ab5e59701f8"
