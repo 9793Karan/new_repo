@@ -1,11 +1,11 @@
 # Web framework
 fastapi==0.135.3
 uvicorn[standard]==0.44.0
-python-multipart==0.0.9
-pydantic==2.7.4
-pydantic-settings==2.3.4
+python-multipart==0.0.26
+pydantic==2.12.5
+pydantic-settings==2.13.1
 
-# LangGraph + LangChain (fully compatible set)
+# LangGraph + LangChain (pip-resolved compatible set)
 langgraph==1.1.6
 langgraph-checkpoint==4.0.1
 langgraph-checkpoint-sqlite==3.0.3
@@ -17,7 +17,7 @@ langchain-huggingface==1.2.1
 langsmith==0.7.30
 
 # OpenAI
-openai==2.0.0
+openai==2.31.0
 
 # Embeddings + Vector store
 faiss-cpu==1.8.0
@@ -26,22 +26,22 @@ sentence-transformers==2.7.0
 # PDF
 pymupdf==1.24.5
 
-# Whisper (tiny = low RAM)
+# Whisper (tiny model = low RAM)
 faster-whisper==1.0.2
 
-# PyTorch CPU-only
+# PyTorch CPU-only (no GPU on Render)
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.3.0+cpu
 torchvision==0.18.0+cpu
 
-# TTS (Linux-compatible, replaces Windows Piper)
+# TTS (Linux-compatible, replaces Windows-only Piper)
 gTTS==2.5.1
 
 # Image
 Pillow==10.3.0
 
 # Utilities
-python-dotenv==1.0.1
-requests==2.32.3
+python-dotenv==1.2.2
+requests==2.33.1
 pandas==2.2.2
 numpy==1.26.4
